@@ -1,6 +1,6 @@
 name: Publish to GHCR
 
-# Builds the frontend and publishes a multi-architecture image to ghcr.io/<owner>/<repo>, using only the built in GITHUB_TOKEN (no secrets to configure).
+# Builds the frontend and publishes a multi-architecture image to ghcr.io/<owner>/piped-frontend, using only the built in GITHUB_TOKEN (no secrets to configure).
 on:
     push:
         paths-ignore:
@@ -38,10 +38,11 @@ jobs:
             - run: pnpm install
             # Dockerfile.ci copies the prebuilt site from dist-ci/, as the upstream Docker Hub workflow did.
             - run: pnpm build && ./localizefonts.sh && mv dist/ dist-ci/
-            # GHCR rejects uppercase letters in image names, and the repository owner or name may have them.
+            # The image is named piped-frontend (like upstream's 1337kavin/piped-frontend) rather than after the
+            # repository. GHCR rejects uppercase letters in image names, and the owner may have them.
             - name: Compute image name
               id: image
-              run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+              run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/piped-frontend" >> "$GITHUB_OUTPUT"
             # Dockerfile.ci has no RUN steps (it only copies files onto a multi-arch nginx image), so
             # Buildx can produce both architectures without QEMU emulation.
             - name: Set up Docker Buildx
