@@ -2,7 +2,7 @@
     <footer class="mt-10 flex w-full flex-wrap items-center justify-center gap-x-6 gap-y-4 rounded-xl py-4 text-center">
         <a
             aria-label="GitHub"
-            href="https://github.com/TeamPiped/Piped"
+            href="https://github.com/noahbroyles/Piped"
             target="_blank"
             class="inline-flex items-center justify-center"
         >
