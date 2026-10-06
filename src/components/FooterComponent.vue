@@ -1,11 +1,6 @@
 <template>
     <footer class="mt-10 flex w-full flex-wrap items-center justify-center gap-x-6 gap-y-4 rounded-xl py-4 text-center">
-        <a
-            aria-label="GitHub"
-            href="https://github.com/noahbroyles/Piped"
-            target="_blank"
-            class="inline-flex items-center justify-center"
-        >
+        <a aria-label="GitHub" :href="sourceCodeHref" target="_blank" class="inline-flex items-center justify-center">
             <i-fa6-brands-github />
             <span v-t="'actions.source_code'" class="ml-2 hover:underline" />
         </a>
@@ -47,6 +42,8 @@ import { useConfig } from "@/composables/useConfig.js";
 
 const { config } = useConfig();
 
+// Instances can point this at their own fork via frontend.sourceCodeUrl; falls back to the upstream repository.
+const sourceCodeHref = computed(() => config.value?.sourceCodeUrl || "https://github.com/TeamPiped/Piped");
 const donationHref = computed(() => config.value?.donationUrl);
 const statusPageHref = computed(() => config.value?.statusPageUrl);
 const privacyPolicyHref = computed(() => config.value?.privacyPolicyUrl);
