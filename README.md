@@ -13,6 +13,31 @@ An open-source alternative frontend for YouTube which is efficient by design.
 
 A list of public instances can be found at the documentation [here](https://github.com/TeamPiped/documentation/blob/main/content/docs/public-instances/index.md).
 
+## About this fork
+
+This is a fork of [TeamPiped/Piped](https://github.com/TeamPiped/Piped) with these fixes:
+
+-   **Live streams play.** In the official frontend, live streams load the watch page and then spin on the thumbnail forever while the time keeps advancing. YouTube names the audio segments of its live HLS streams `seg.ts` although they are packed AAC, so Shaka Player treats them as MPEG-TS and never lines the audio up with the video. This fork renames those segments so Shaka handles them as AAC.
+-   **Playback speed labels match your region.** Shaka Player labels its preset speeds with a comma (`1,25`) for everyone. This fork uses the decimal separator of the region chosen in the preferences, so the US and the UK see `1.25` and Germany and France see `1,25`.
+-   **Shaka Player is updated** from 5.1.0 to 5.2.12.
+
+A multi-architecture image (`linux/amd64` and `linux/arm64`) is published to `ghcr.io/noahbroyles/piped-frontend` on every push to `master`. It is a drop-in replacement for the official `1337kavin/piped-frontend` image.
+
+### Easiest: use the Piped-Docker fork
+
+[noahbroyles/Piped-Docker](https://github.com/noahbroyles/Piped-Docker) sets up a complete instance the same way as the official Piped-Docker, but with this frontend and the fixed backend from [noahbroyles/Piped-Backend](https://github.com/noahbroyles/Piped-Backend). The backend makes videos available above 360p again and fixes six security problems in the official backend. You get every fix in both forks without editing any images yourself. Its `configure-instance.sh` also generates the secret that the fixed backend uses to verify new-video notifications, and offers automatic updates with Watchtower for every stack type.
+
+For a new instance, use it in place of the official repository:
+
+```sh
+git clone https://github.com/noahbroyles/Piped-Docker
+cd Piped-Docker
+./configure-instance.sh
+docker compose up -d
+```
+
+For an existing installation, follow [Switching an existing installation](https://github.com/noahbroyles/Piped-Docker#switching-an-existing-installation) in its README.
+
 # The Problem
 
 YouTube has an extremely invasive privacy policy which relies on using user data in unethical ways. You give them a lot of data - ranging from ideas, music taste, content, political opinions, and much more than you think.
