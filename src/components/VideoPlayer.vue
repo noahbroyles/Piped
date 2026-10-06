@@ -375,6 +375,38 @@ function seek(time) {
     }
 }
 
+// Relabels the playback speed preset buttons with the decimal separator of the region chosen in
+// Piped's preferences, so regions that write decimals with a comma show "1,25" and the rest show
+// "1.25". Shaka 5.2 always uses a comma, and Shaka 5.3.0 always uses a period
+// (shaka-project/shaka-player@77fc1e57), so this is still needed after upgrading. The buttons are
+// rebuilt every time uiInstance.configure() runs, so call this after each call.
+function fixPlaybackRateLabels() {
+    const region = getPreferenceString("region", "US");
+    let locale;
+    try {
+        // Intl ignores a region on its own ("und-DE" formats like en-US), so pair the region with
+        // its most likely language ("de-DE"). Only the language is taken from maximize(): adding
+        // its script ("de-Latn-CH") makes Intl drop the region and fall back to the language.
+        locale = `${new Intl.Locale("und", { region }).maximize().language}-${region}`;
+    } catch {
+        locale = "en-US";
+    }
+    container.value?.querySelectorAll(".shaka-playback-rate-preset-btn").forEach(button => {
+        // Shaka stores the button's rate in data-rate. If a future Shaka stops doing that, leave
+        // Shaka's own label in place rather than showing "NaN".
+        const rate = parseFloat(button.dataset.rate);
+        if (!Number.isFinite(rate)) return;
+        // Like Shaka, show at least one decimal place ("1.0", "1.25"), and keep Latin digits so
+        // that only the separator follows the region.
+        const decimals = Math.max(1, (String(rate).split(".")[1] ?? "").length);
+        button.textContent = rate.toLocaleString(locale, {
+            minimumFractionDigits: decimals,
+            maximumFractionDigits: decimals,
+            numberingSystem: "latn",
+        });
+    });
+}
+
 async function setPlayerAttrs(localPlayer, el, uri, mime, shaka) {
     const url = "/watch?v=" + props.video.id;
 
@@ -437,6 +469,7 @@ async function setPlayerAttrs(localPlayer, el, uri, mime, shaka) {
         };
 
         uiInstance.configure(config);
+        fixPlaybackRateLabels();
     }
 
     updateMarkers();
@@ -521,6 +554,7 @@ async function setPlayerAttrs(localPlayer, el, uri, mime, shaka) {
                     ...overflowMenuButtons.slice(1),
                 ];
                 uiInstance.configure("overflowMenuButtons", newOverflowMenuButtons);
+                fixPlaybackRateLabels();
             }
 
             if (qualityConds) {
