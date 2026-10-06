@@ -613,22 +613,7 @@ async function loadVideo() {
     var uri;
     var mime;
 
-    if (props.video.livestream && props.video.dash && MseSupport) {
-        // YouTube's live HLS is demuxed (MPEG-TS video plus packed AAC audio), and
-        // Shaka never gets the audio onto the video's timeline, so playback stalls
-        // on the poster forever. Live DASH is fMP4, which MSE plays natively.
-        // rewrite=false keeps the MPD's absolute googlevideo.com BaseURLs: the
-        // proxy's rewritten BaseURLs carry host= in the query string, which is
-        // dropped when Shaka resolves sq/$Number$ against them. The request filter
-        // below routes each segment through the proxy instead.
-        const url = new URL(props.video.dash);
-        url.searchParams.set("rewrite", false);
-        uri = url.toString();
-        mime = "application/dash+xml";
-    } else if (props.video.livestream) {
-        // Fallback when there is no DASH manifest or no MSE. Without MSE (e.g. older
-        // iOS Safari) Shaka hands HLS to the browser's native player, which handles
-        // the packed audio itself.
+    if (props.video.livestream) {
         uri = props.video.hls;
         mime = "application/x-mpegURL";
     } else if (
