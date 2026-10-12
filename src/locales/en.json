@@ -165,6 +165,7 @@
         "playback_speed": "Playback speed",
         "invalid_input": "Invalid input",
         "prefer_hls": "Prefer HLS over DASH",
+        "use_sabr": "Use SABR streaming when available (like YouTube's own player)",
         "export_history": "Export history",
         "import_history": "Import history",
         "file_format": "File format",

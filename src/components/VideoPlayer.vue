@@ -78,6 +78,7 @@ import {
     getPreferenceString,
     setPreference,
 } from "@/composables/usePreferences.js";
+import { apiUrl, fetchJson } from "@/composables/useApi.js";
 const shakaImport = import("shaka-player/dist/shaka-player.ui.js");
 const hotkeysImport = import("hotkeys-js");
 
@@ -126,6 +127,8 @@ let hotkeysLib = null;
 let shakaPromise = null;
 let hotkeysPromise = null;
 let lastSelectedTextTrack = null;
+// googlevideo's SABR adapter while a SABR video is loaded (see utils/SabrUtils.js)
+let sabrAdapter = null;
 let thumbnailVttUrl = null;
 
 const shouldAutoPlay = computed(() => {
@@ -407,7 +410,13 @@ function fixPlaybackRateLabels() {
     });
 }
 
-async function setPlayerAttrs(localPlayer, el, uri, mime, shaka) {
+function disposeSabr() {
+    sabrAdapter?.dispose();
+    sabrAdapter = null;
+}
+
+// onLoadError: when set, called instead of showing the error if the video fails to load
+async function setPlayerAttrs(localPlayer, el, uri, mime, shaka, onLoadError) {
     const url = "/watch?v=" + props.video.id;
 
     if (!uiInstance) {
@@ -609,6 +618,10 @@ async function setPlayerAttrs(localPlayer, el, uri, mime, shaka) {
             await setupThumbnailTrack();
         })
         .catch(e => {
+            if (onLoadError) {
+                console.warn("Loading failed, trying again without SABR", e);
+                return onLoadError();
+            }
             console.error(e);
             error.value = e.code;
         });
@@ -699,9 +712,67 @@ async function loadVideo() {
         uri = props.video.hls;
         mime = "application/x-mpegURL";
     } else {
-        uri = props.video.videoStreams.findLast(stream => stream.codec == null).url;
+        // There may be none when the video only plays over SABR
+        uri = props.video.videoStreams.findLast(stream => stream.codec == null)?.url;
         mime = "video/mp4";
     }
+
+    // SABR is how YouTube's own web player streams, so prefer it when the backend offers it
+    const sabr =
+        !props.video.livestream &&
+        props.video.sabr &&
+        MseSupport &&
+        !getPreferenceBoolean("preferHls", false) &&
+        getPreferenceBoolean("sabr", true)
+            ? props.video.sabr
+            : null;
+
+    // Loaded on demand, so googlevideo isn't downloaded unless it's needed
+    const sabrUtils = sabr ? await import("../utils/SabrUtils.js") : null;
+
+    // The regular streams stay as a fallback in case SABR doesn't work out
+    const fallbackUri = uri;
+    const fallbackMime = mime;
+
+    if (sabr) {
+        uri = sabrUtils.generateSabrManifestUri(sabr, props.video.duration);
+        mime = "application/dash+xml";
+    }
+
+    const startPlayback = player => {
+        // Whatever played before may have had an adapter of its own
+        disposeSabr();
+
+        if (!sabr) return setPlayerAttrs(player, el, uri, mime, shakaLib);
+
+        // Without regular streams there is nothing to fall back to, so just show the error
+        const fallback = fallbackUri
+            ? () => {
+                  disposeSabr();
+                  return setPlayerAttrs(player, el, fallbackUri, fallbackMime, shakaLib);
+              }
+            : null;
+
+        const videoId = props.video.id;
+        const adapter = sabrUtils.attachSabrAdapter(
+            shakaLib,
+            player,
+            sabr,
+            () => fetchJson(apiUrl() + "/streams/" + videoId).then(streams => streams.sabr),
+            () => {
+                // Only if this video's adapter is still the one in use
+                if (sabrAdapter !== adapter) return;
+                console.warn("googlevideo keeps refusing the SABR stream");
+                if (fallback) return fallback();
+                disposeSabr();
+                player.unload();
+                error.value = shakaLib.util.Error.Code.BAD_HTTP_STATUS;
+            },
+        );
+        sabrAdapter = adapter;
+
+        setPlayerAttrs(player, el, uri, mime, shakaLib, fallback);
+    };
 
     if (noPrevPlayer)
         shakaPromise.then(async () => {
@@ -762,9 +833,9 @@ async function loadVideo() {
             localPlayer.configure("streaming.bufferingGoal", Math.max(getPreferenceNumber("bufferGoal", 10), 10));
             localPlayer.configure("streaming.bufferBehind", 300);
 
-            setPlayerAttrs(localPlayer, el, uri, mime, shakaLib);
+            startPlayback(localPlayer);
         });
-    else setPlayerAttrs(playerInstance, el, uri, mime, shakaLib);
+    else startPlayback(playerInstance);
 
     if (noPrevPlayer) {
         el.addEventListener("loadeddata", () => {
@@ -805,11 +876,13 @@ function destroy(hotkeys) {
         thumbnailVttUrl = null;
     }
     if (uiInstance && !document.pictureInPictureElement) {
+        disposeSabr();
         uiInstance.destroy();
         uiInstance = undefined;
         playerInstance = undefined;
     }
     if (playerInstance) {
+        disposeSabr();
         playerInstance.destroy();
         if (!document.pictureInPictureElement) playerInstance = undefined;
     }
