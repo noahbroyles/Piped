@@ -760,9 +760,14 @@ async function loadVideo() {
 
         if (!sabr) return setPlayerAttrs(player, el, uri, mime, shakaLib);
 
-        // Without regular streams there is nothing to fall back to, so just show the error
+        // Without regular streams there is nothing to fall back to, so just show the error.
+        // Only fall back once: loading the regular streams interrupts a SABR load that is still running,
+        // and that load's error handler would otherwise start the fallback a second time.
+        let fellBack = false;
         const fallback = fallbackUri
             ? () => {
+                  if (fellBack) return;
+                  fellBack = true;
                   disposeSabr();
                   return setPlayerAttrs(player, el, fallbackUri, fallbackMime, shakaLib);
               }
@@ -774,10 +779,10 @@ async function loadVideo() {
             player,
             sabr,
             () => fetchJson(apiUrl() + "/streams/" + videoId).then(streams => streams.sabr),
-            () => {
+            reason => {
                 // Only if this video's adapter is still the one in use
                 if (sabrAdapter !== adapter) return;
-                console.warn("googlevideo keeps refusing the SABR stream");
+                console.warn(`Not using SABR: ${reason}`);
                 if (fallback) return fallback();
                 disposeSabr();
                 player.unload();

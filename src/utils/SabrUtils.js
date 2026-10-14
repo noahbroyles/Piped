@@ -69,7 +69,8 @@ export function generateSabrManifestUri(sabr, duration) {
  * Hooks a SABR adapter into `player` for the video described by `sabr`.
  *
  * @param reloadSabr called when YouTube asks for a fresh player response; resolves to new `sabr` info
- * @param onFailure called once if googlevideo keeps refusing the stream, even with fresh SABR info
+ * @param onFailure called once, with the reason, if SABR isn't going to work: googlevideo keeps refusing the
+ *   stream even with fresh SABR info, or it doesn't accept the PoToken's attestation
  * @returns the adapter, to be disposed of before the player loads anything else
  */
 export function attachSabrAdapter(shaka, player, sabr, reloadSabr, onFailure) {
@@ -96,16 +97,24 @@ export function attachSabrAdapter(shaka, player, sabr, reloadSabr, onFailure) {
                 .catch(e => {
                     console.warn("Could not refresh the SABR streaming URL", e);
                     state = "failed";
-                    onFailure();
+                    onFailure("googlevideo refused the SABR stream and it could not be refreshed");
                 });
         } else if (state === "refreshed") {
             state = "failed";
-            onFailure();
+            onFailure("googlevideo keeps refusing the SABR stream");
         }
     };
 
+    // Without an accepted PoToken, googlevideo only serves the first minute (status 2) or nothing (3),
+    // and a fresh streaming URL doesn't change that, so give up on SABR right away
+    const onUnattested = status => {
+        if (state === "failed") return;
+        state = "failed";
+        onFailure(`googlevideo did not accept the PoToken (stream protection status ${status})`);
+    };
+
     const adapter = new SabrStreamingAdapter({
-        playerAdapter: new SabrPlayerAdapter(shaka, onForbidden),
+        playerAdapter: new SabrPlayerAdapter(shaka, onForbidden, onUnattested),
         clientInfo: {
             clientName: sabr.clientName,
             clientVersion: sabr.clientVersion,

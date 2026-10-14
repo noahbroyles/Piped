@@ -27,9 +27,12 @@ function headersToObject(headers) {
 export class SabrPlayerAdapter {
     // onForbidden: called when googlevideo refuses a SABR request (401 or 403). Shaka would only
     // keep switching between formats that all fail the same way, so the caller has to step in.
-    constructor(shaka, onForbidden) {
+    // onUnattested: called with the status when googlevideo reports the stream's attestation as
+    // pending (2) or required (3). It then only serves the first minute, or nothing at all.
+    constructor(shaka, onForbidden, onUnattested) {
         this.shaka = shaka;
         this.onForbidden = onForbidden;
+        this.onUnattested = onUnattested;
         this.player = null;
         this.requestMetadataManager = null;
         this.cacheManager = null;
@@ -223,6 +226,12 @@ export class SabrPlayerAdapter {
             }
         };
 
+        // googlevideo puts the stream protection status in (nearly) every response
+        const checkStreamProtection = () => {
+            const status = requestMetadata.streamInfo?.streamProtectionStatus?.status;
+            if (requestMetadata.isSABR && (status === 2 || status === 3)) this.onUnattested?.(status);
+        };
+
         // A redirect or context update comes without media; the adapter then retries on its own
         const shouldReturnEmptyResponse = () =>
             requestMetadata.isSABR &&
@@ -234,6 +243,7 @@ export class SabrPlayerAdapter {
             progressUpdated(Date.now() - lastTime, arrayBuffer.byteLength, 0);
 
             const result = await umpProcessor.processChunk(new Uint8Array(arrayBuffer));
+            checkStreamProtection();
             if (result) {
                 checkResultIntegrity(result);
                 return this.createShakaResponse({ uri, request, requestType, response, arrayBuffer: result.data });
@@ -269,6 +279,7 @@ export class SabrPlayerAdapter {
             }
 
             const result = await umpProcessor.processChunk(value);
+            checkStreamProtection();
             const segmentInfo = umpProcessor.getSegmentInfo();
 
             if (segmentInfo) {
