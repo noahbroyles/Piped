@@ -129,7 +129,12 @@ let hotkeysPromise = null;
 let lastSelectedTextTrack = null;
 // googlevideo's SABR adapter while a SABR video is loaded (see utils/SabrUtils.js)
 let sabrAdapter = null;
+// The interval that watches that adapter's video for stalls
+let sabrStallTimer = null;
 let thumbnailVttUrl = null;
+
+// How long a SABR video may wait for media without getting any before the regular streams take over
+const SABR_STALL_TIMEOUT_MS = 15000;
 
 const shouldAutoPlay = computed(() => {
     return getPreferenceBoolean("playerAutoPlay", true) && !props.isEmbed;
@@ -411,12 +416,15 @@ function fixPlaybackRateLabels() {
 }
 
 function disposeSabr() {
+    clearInterval(sabrStallTimer);
+    sabrStallTimer = null;
     sabrAdapter?.dispose();
     sabrAdapter = null;
 }
 
 // onLoadError: when set, called instead of showing the error if the video fails to load
-async function setPlayerAttrs(localPlayer, el, uri, mime, shaka, onLoadError) {
+// resume: when set, { time, play } to continue from instead of the start time, e.g. after switching streams
+async function setPlayerAttrs(localPlayer, el, uri, mime, shaka, onLoadError, resume) {
     const url = "/watch?v=" + props.video.id;
 
     if (!uiInstance) {
@@ -532,7 +540,9 @@ async function setPlayerAttrs(localPlayer, el, uri, mime, shaka, onLoadError) {
 
     var startTime = 0;
 
-    if (time) {
+    if (resume?.time > 0) {
+        startTime = resume.time;
+    } else if (time) {
         startTime = parseTimeParam(time);
     } else if (window.db && getPreferenceBoolean("watchHistory", false)) {
         await new Promise(resolve => {
@@ -563,6 +573,8 @@ async function setPlayerAttrs(localPlayer, el, uri, mime, shaka, onLoadError) {
                 el.currentTime = startTime;
                 await new Promise(resolve => el.addEventListener("seeked", resolve, { once: true }));
             }
+            // Keep playing if the video was playing before, even when autoplay is off
+            if (resume?.play && el.paused) el.play().catch(() => {});
             initialSeekComplete.value = true;
             let lang = "en";
             const prefLang = getPreferenceString("hl", "en").substr(0, 2);
@@ -770,28 +782,58 @@ async function loadVideo() {
             ? () => {
                   if (fellBack) return;
                   fellBack = true;
+                  // Continue where SABR left off, unless it never got past loading
+                  const resume = { time: initialSeekComplete.value ? el.currentTime : 0, play: !el.paused };
                   disposeSabr();
-                  return setPlayerAttrs(player, el, fallbackUri, fallbackMime, shakaLib);
+                  return setPlayerAttrs(player, el, fallbackUri, fallbackMime, shakaLib, undefined, resume);
               }
             : null;
 
         const videoId = props.video.id;
-        const adapter = sabrUtils.attachSabrAdapter(
+        let adapter = null;
+
+        const onSabrFailure = reason => {
+            // Only if this video's adapter is still the one in use
+            if (sabrAdapter !== adapter) return;
+            console.warn(`Not using SABR: ${reason}`);
+            if (fallback) return fallback();
+            disposeSabr();
+            player.unload();
+            error.value = shakaLib.util.Error.Code.BAD_HTTP_STATUS;
+        };
+
+        adapter = sabrUtils.attachSabrAdapter(
             shakaLib,
             player,
             sabr,
             () => fetchJson(apiUrl() + "/streams/" + videoId).then(streams => streams.sabr),
-            reason => {
-                // Only if this video's adapter is still the one in use
-                if (sabrAdapter !== adapter) return;
-                console.warn(`Not using SABR: ${reason}`);
-                if (fallback) return fallback();
-                disposeSabr();
-                player.unload();
-                error.value = shakaLib.util.Error.Code.BAD_HTTP_STATUS;
-            },
+            onSabrFailure,
         );
         sabrAdapter = adapter;
+
+        // When googlevideo keeps answering without media but also without an error, Shaka retries forever
+        // and the spinner never goes away. So give up on SABR when the video has been waiting for media
+        // (still loading, seeking or playing, but without enough data to go on) for SABR_STALL_TIMEOUT_MS,
+        // with no new media buffered and no progress in playback.
+        let lastProgress = Date.now();
+        let lastBuffered = 0;
+        let lastTime = el.currentTime;
+        sabrStallTimer = setInterval(() => {
+            let buffered = 0;
+            for (let i = 0; i < el.buffered.length; i++) buffered += el.buffered.end(i) - el.buffered.start(i);
+
+            const waiting =
+                !el.ended &&
+                (!initialSeekComplete.value || el.seeking || !el.paused) &&
+                el.readyState < HTMLMediaElement.HAVE_FUTURE_DATA;
+
+            if (!waiting || buffered > lastBuffered || el.currentTime !== lastTime) lastProgress = Date.now();
+            lastBuffered = buffered;
+            lastTime = el.currentTime;
+
+            if (Date.now() - lastProgress >= SABR_STALL_TIMEOUT_MS)
+                onSabrFailure(`no media arrived for ${SABR_STALL_TIMEOUT_MS / 1000} s`);
+        }, 1000);
 
         setPlayerAttrs(player, el, uri, mime, shakaLib, fallback);
     };
