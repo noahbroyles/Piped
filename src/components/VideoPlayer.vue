@@ -493,8 +493,23 @@ async function setPlayerAttrs(localPlayer, el, uri, mime, shaka, onLoadError) {
     const prefetchLimit = Math.min(Math.max(getPreferenceNumber("prefetchLimit", 2), 0), 10);
 
     playerInstance.configure({
-        preferredVideoCodecs: preferredVideoCodecs.value,
-        preferredAudioCodecs: ["opus", "mp4a"],
+        // One preference per codec, most preferred first; the other fields mean no preference
+        preferredVideo: preferredVideoCodecs.value.map(codec => ({
+            label: "",
+            role: "",
+            language: "",
+            codec,
+            hdrLevel: "",
+            layout: "",
+        })),
+        preferredAudio: ["opus", "mp4a"].map(codec => ({
+            language: "",
+            role: "",
+            label: "",
+            channelCount: 0,
+            codec,
+            spatialAudio: false,
+        })),
         manifest: {
             disableVideo: disableVideo,
         },
