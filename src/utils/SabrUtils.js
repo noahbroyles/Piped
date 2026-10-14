@@ -15,12 +15,28 @@ function isUsableFormat(format) {
     return format.mimeType && format.initRange && format.indexRange && !format.isDrc;
 }
 
+// The usable formats, each converted with buildSabrFormat. Some audio tracks come twice with the same
+// itag and track ID, differing only in their xtags (e.g. a "vb" variant of the original track). Their
+// unique format IDs are the same, so the manifest and the adapter could each settle on a different
+// one, and the segments googlevideo sends would never match the one Shaka asked for. Keep the first.
+function usableSabrFormats(sabr) {
+    const seen = new Set();
+    return sabr.formats.filter(isUsableFormat).flatMap(format => {
+        // buildSabrFormat reads the track ID from audio_track.id or audioTrackId, but YouTube's JSON has it
+        // in audioTrack.id. Without it, every language of an itag would get the same unique format ID.
+        const sabrFormat = buildSabrFormat({ ...format, audioTrackId: format.audioTrack?.id });
+        const id = FormatKeyUtils.getUniqueFormatId(sabrFormat);
+        if (seen.has(id)) return [];
+        seen.add(id);
+        return [{ format, sabrFormat }];
+    });
+}
+
 /**
  * Builds a DASH manifest (as a data URI) for the formats in `sabr`.
  */
 export function generateSabrManifestUri(sabr, duration) {
-    const streams = sabr.formats.filter(isUsableFormat).map(format => {
-        const sabrFormat = buildSabrFormat(format);
+    const streams = usableSabrFormats(sabr).map(({ format, sabrFormat }) => {
         const isVideo = format.mimeType.startsWith("video/");
         // "video/mp4; codecs=\"avc1.4d401e\"" -> "video/mp4" and "avc1.4d401e"
         const [mimeType, codecsPart] = format.mimeType.split(";");
@@ -109,7 +125,7 @@ export function attachSabrAdapter(shaka, player, sabr, reloadSabr, onFailure) {
     adapter.attach(player);
     adapter.setStreamingURL(sabr.serverAbrStreamingUrl);
     adapter.setUstreamerConfig(sabr.videoPlaybackUstreamerConfig);
-    adapter.setServerAbrFormats(sabr.formats.filter(isUsableFormat).map(buildSabrFormat));
+    adapter.setServerAbrFormats(usableSabrFormats(sabr).map(({ sabrFormat }) => sabrFormat));
 
     return adapter;
 }
