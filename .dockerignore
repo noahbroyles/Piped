@@ -4,3 +4,5 @@ dist/
 .*
 *.md
 !.prettier*
+# .env holds VITE_PIPED_API, the default backend that docker/entrypoint.sh rewrites to BACKEND_HOSTNAME
+!.env
