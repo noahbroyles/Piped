@@ -529,10 +529,12 @@ async function setPlayerAttrs(localPlayer, el, uri, mime, shaka) {
     }
 
     playerInstance
-        .load(uri, null, mime)
+        // Shaka 5 resolves load() before the metadata is in, then seeks to its own start time once it is, which
+        // would undo a seek made here alone. So it gets the start time too (null means the default).
+        .load(uri, startTime > 0 ? startTime : null, mime)
         .then(async () => {
-            // Player.load()'s startTime arg does not reliably perform the
-            // initial seek; apply it here. See shaka-project/shaka-player#6241.
+            // Player.load()'s startTime arg has not always performed the
+            // initial seek reliably; apply it here too. See shaka-project/shaka-player#6241.
             if (startTime > 0) {
                 el.currentTime = startTime;
                 await new Promise(resolve => el.addEventListener("seeked", resolve, { once: true }));
