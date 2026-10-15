@@ -79,6 +79,7 @@ import {
     setPreference,
 } from "@/composables/usePreferences.js";
 import { apiUrl, fetchJson } from "@/composables/useApi.js";
+import { clearResumePosition, getResumePosition, saveResumePosition } from "@/utils/ResumePositions.js";
 const shakaImport = import("shaka-player/dist/shaka-player.ui.js");
 const hotkeysImport = import("hotkeys-js");
 
@@ -135,6 +136,10 @@ let thumbnailVttUrl = null;
 
 // How long a SABR video may wait for media without getting any before the regular streams take over
 const SABR_STALL_TIMEOUT_MS = 15000;
+
+// How often the position of a playing video is saved, so leaving or reloading the page resumes there
+const RESUME_SAVE_INTERVAL_MS = 3000;
+let lastResumeSave = 0;
 
 const shouldAutoPlay = computed(() => {
     return getPreferenceBoolean("playerAutoPlay", true) && !props.isEmbed;
@@ -359,6 +364,25 @@ async function setupThumbnailTrack() {
     await playerInstance.addThumbnailsTrack(thumbnailVttUrl, "text/vtt");
 }
 
+// Remembers where the current video is, for resuming after the page is left or reloaded
+function saveResumePositionNow() {
+    // Before the initial seek, currentTime is still 0 (or the previous video's) and would overwrite the saved spot
+    if (!getPreferenceBoolean("resumePlayback", false)) return;
+    if (!initialSeekComplete.value || destroying.value || !props.video.id) return;
+    if (props.video.livestream || props.isEmbed) return;
+
+    const el = videoEl.value;
+    if (!el) return;
+
+    // Near the end (like the watch history) or back at the start, there is nothing worth resuming
+    const duration = el.duration || props.video.duration;
+    if (el.ended || (duration && el.currentTime >= duration * 0.9) || el.currentTime < 5) {
+        clearResumePosition(props.video.id);
+    } else {
+        saveResumePosition(props.video.id, el.currentTime);
+    }
+}
+
 async function updateProgressDatabase(time) {
     if (new Date().getTime() - lastUpdate.value < 500) return;
     lastUpdate.value = new Date().getTime();
@@ -560,6 +584,19 @@ async function setPlayerAttrs(localPlayer, el, uri, mime, shaka, onLoadError, re
                 resolve();
             };
         });
+    }
+
+    // Otherwise, where this browser left off last time
+    if (
+        getPreferenceBoolean("resumePlayback", false) &&
+        !startTime &&
+        !resume &&
+        !time &&
+        !props.video.livestream &&
+        !props.isEmbed
+    ) {
+        const saved = getResumePosition(props.video.id);
+        if (saved && !(props.video.duration && saved >= props.video.duration * 0.9)) startTime = saved;
     }
 
     playerInstance
@@ -909,6 +946,10 @@ async function loadVideo() {
             const time = el.currentTime;
             emit("timeupdate", time);
             updateProgressDatabase(time);
+            if (!el.paused && Date.now() - lastResumeSave >= RESUME_SAVE_INTERVAL_MS) {
+                lastResumeSave = Date.now();
+                saveResumePositionNow();
+            }
             if (props.sponsors && props.sponsors.segments) {
                 const segment = findCurrentSegment(time);
                 inSegment.value = !!segment;
@@ -928,7 +969,11 @@ async function loadVideo() {
                 setPreference("rate", rate, true);
         });
 
+        // Pausing is a likely last stop before leaving, so save the exact spot
+        el.addEventListener("pause", saveResumePositionNow);
+
         el.addEventListener("ended", () => {
+            if (props.video.id && getPreferenceBoolean("resumePlayback", false)) clearResumePosition(props.video.id);
             emit("ended");
         });
     }
@@ -955,6 +1000,8 @@ function destroy(hotkeys) {
 }
 
 onMounted(() => {
+    // Closing or reloading the tab gives no other warning
+    window.addEventListener("pagehide", saveResumePositionNow);
     if (!shakaLib) shakaPromise = shakaImport.then(shaka => shaka.default).then(shaka => (shakaLib = shaka));
     if (!hotkeysLib) hotkeysPromise = hotkeysImport.then(mod => mod.default).then(hk => (hotkeysLib = hk));
 });
@@ -1112,11 +1159,15 @@ onActivated(() => {
 });
 
 onDeactivated(() => {
+    // Leaving the watch page within the app
+    saveResumePositionNow();
     destroying.value = true;
     destroy(true);
 });
 
 onUnmounted(() => {
+    saveResumePositionNow();
+    window.removeEventListener("pagehide", saveResumePositionNow);
     destroying.value = true;
     destroy(true);
 });
