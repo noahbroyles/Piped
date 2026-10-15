@@ -199,6 +199,12 @@
         </template>
         <PreferenceSwitch id="chkStoreWatchHistory" v-model="watchHistory" @change="onChange" />
     </PreferenceRow>
+    <PreferenceRow for-id="chkResumePlayback">
+        <template #label>
+            <strong v-t="'actions.resume_playback'" />
+        </template>
+        <PreferenceSwitch id="chkResumePlayback" v-model="resumePlayback" @change="onChange" />
+    </PreferenceRow>
     <PreferenceRow v-if="watchHistory" for-id="chkHideWatched">
         <template #label>
             <strong v-t="'actions.hide_watched'" />
@@ -470,6 +476,7 @@ import PreferenceListbox from "./ui/PreferenceListbox.vue";
 import PreferenceNumberField from "./ui/PreferenceNumberField.vue";
 import PreferenceRow from "./ui/PreferenceRow.vue";
 import PreferenceSwitch from "./ui/PreferenceSwitch.vue";
+import { clearAllResumePositions } from "@/utils/ResumePositions.js";
 import {
     testLocalStorage,
     usePreferenceBoolean,
@@ -534,6 +541,7 @@ const minimizeChapters = usePreferenceBoolean("minimizeChapters", false);
 const showWatchOnYouTube = usePreferenceBoolean("showWatchOnYouTube", false);
 const searchSuggestions = usePreferenceBoolean("searchSuggestions", true);
 const watchHistory = usePreferenceBoolean("watchHistory", false);
+const resumePlayback = usePreferenceBoolean("resumePlayback", false);
 const searchHistory = usePreferenceBoolean("searchHistory", false);
 const hideWatched = usePreferenceBoolean("hideWatched", false);
 const selectedLanguage = usePreferenceString("hl", "en");
@@ -699,6 +707,8 @@ onMounted(async () => {
 
 function onChange() {
     if (!searchHistory.value) localStorage.removeItem("search_history");
+    // Turning it off also forgets what was saved, as it is a record of what was watched
+    if (!resumePlayback.value) clearAllResumePositions();
     minSegmentLength.value = Math.max(minSegmentLength.value || 0, 0);
     bufferingGoal.value = Math.max(bufferingGoal.value || 10, 10);
     prefetchLimit.value = Math.max(prefetchLimit.value || 0, 0);

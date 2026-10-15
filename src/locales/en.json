@@ -65,6 +65,7 @@
         "minimize_comments_default": "Minimize Comments by default",
         "minimize_description_default": "Minimize Description by default",
         "store_watch_history": "Store Watch History",
+        "resume_playback": "Resume videos where you left off (saved in this browser only)",
         "language_selection": "Language",
         "instances_list": "Instances List",
         "enabled_codecs": "Enabled Codecs (Multiple)",
