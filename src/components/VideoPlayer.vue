@@ -4,15 +4,9 @@
         data-shaka-player-container
         class="relative flex max-h-screen w-full justify-center"
         :class="{ 'max-h-[75vh] min-h-64 bg-black': !isEmbed }"
+        :data-loading="!initialSeekComplete || undefined"
     >
-        <video
-            ref="videoEl"
-            class="w-full"
-            data-shaka-player
-            :autoplay="shouldAutoPlay"
-            :loop="selectedAutoLoop"
-            playsinline
-        />
+        <video ref="videoEl" class="w-full" data-shaka-player :loop="selectedAutoLoop" playsinline />
         <button
             v-if="inSegment"
             class="skip-segment-button"
@@ -610,9 +604,10 @@ async function setPlayerAttrs(localPlayer, el, uri, mime, shaka, onLoadError, re
                 el.currentTime = startTime;
                 await new Promise(resolve => el.addEventListener("seeked", resolve, { once: true }));
             }
-            // Keep playing if the video was playing before, even when autoplay is off
-            if (resume?.play && el.paused) el.play().catch(() => {});
+            // Only now may playback start (see the "play" listener), so this is where autoplay happens:
+            // keep playing if the video was playing before switching streams, else follow the preference
             initialSeekComplete.value = true;
+            if ((resume ? resume.play : shouldAutoPlay.value) && el.paused) el.play().catch(() => {});
             let lang = "en";
             const prefLang = getPreferenceString("hl", "en").substr(0, 2);
             const audioTracks = playerInstance.getAudioTracks();
@@ -820,7 +815,10 @@ async function loadVideo() {
                   if (fellBack) return;
                   fellBack = true;
                   // Continue where SABR left off, unless it never got past loading
-                  const resume = { time: initialSeekComplete.value ? el.currentTime : 0, play: !el.paused };
+                  // (before then, playback was held back, so the autoplay preference decides)
+                  const resume = initialSeekComplete.value
+                      ? { time: el.currentTime, play: !el.paused }
+                      : { time: 0, play: shouldAutoPlay.value };
                   disposeSabr();
                   return setPlayerAttrs(player, el, fallbackUri, fallbackMime, shakaLib, undefined, resume);
               }
@@ -967,6 +965,12 @@ async function loadVideo() {
             const rate = el.playbackRate;
             if (rate > 0 && !isNaN(el.duration) && !isNaN(el.duration - e.timeStamp / 1000))
                 setPreference("rate", rate, true);
+        });
+
+        // Nothing may start playback before the video has finished loading: a play button click, a hotkey or
+        // the browser. Starting early could begin a few seconds in, or never start at all.
+        el.addEventListener("play", () => {
+            if (!initialSeekComplete.value) el.pause();
         });
 
         // Pausing is a likely last stop before leaving, so save the exact spot
@@ -1244,5 +1248,11 @@ defineExpose({
 video.shaka-video:focus,
 video[data-shaka-player]:focus {
     outline: none !important;
+}
+
+/* While the video loads, its play buttons do nothing (see the "play" listener), so show them as disabled */
+[data-loading] .shaka-play-button {
+    pointer-events: none;
+    opacity: 0.4;
 }
 </style>
