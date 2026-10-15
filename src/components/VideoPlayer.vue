@@ -78,6 +78,7 @@ import {
     getPreferenceString,
     setPreference,
 } from "@/composables/usePreferences.js";
+import { apiUrl, fetchJson } from "@/composables/useApi.js";
 const shakaImport = import("shaka-player/dist/shaka-player.ui.js");
 const hotkeysImport = import("hotkeys-js");
 
@@ -126,7 +127,14 @@ let hotkeysLib = null;
 let shakaPromise = null;
 let hotkeysPromise = null;
 let lastSelectedTextTrack = null;
+// googlevideo's SABR adapter while a SABR video is loaded (see utils/SabrUtils.js)
+let sabrAdapter = null;
+// The interval that watches that adapter's video for stalls
+let sabrStallTimer = null;
 let thumbnailVttUrl = null;
+
+// How long a SABR video may wait for media without getting any before the regular streams take over
+const SABR_STALL_TIMEOUT_MS = 15000;
 
 const shouldAutoPlay = computed(() => {
     return getPreferenceBoolean("playerAutoPlay", true) && !props.isEmbed;
@@ -407,7 +415,16 @@ function fixPlaybackRateLabels() {
     });
 }
 
-async function setPlayerAttrs(localPlayer, el, uri, mime, shaka) {
+function disposeSabr() {
+    clearInterval(sabrStallTimer);
+    sabrStallTimer = null;
+    sabrAdapter?.dispose();
+    sabrAdapter = null;
+}
+
+// onLoadError: when set, called instead of showing the error if the video fails to load
+// resume: when set, { time, play } to continue from instead of the start time, e.g. after switching streams
+async function setPlayerAttrs(localPlayer, el, uri, mime, shaka, onLoadError, resume) {
     const url = "/watch?v=" + props.video.id;
 
     if (!uiInstance) {
@@ -484,8 +501,23 @@ async function setPlayerAttrs(localPlayer, el, uri, mime, shaka) {
     const prefetchLimit = Math.min(Math.max(getPreferenceNumber("prefetchLimit", 2), 0), 10);
 
     playerInstance.configure({
-        preferredVideoCodecs: preferredVideoCodecs.value,
-        preferredAudioCodecs: ["opus", "mp4a"],
+        // One preference per codec, most preferred first; the other fields mean no preference
+        preferredVideo: preferredVideoCodecs.value.map(codec => ({
+            label: "",
+            role: "",
+            language: "",
+            codec,
+            hdrLevel: "",
+            layout: "",
+        })),
+        preferredAudio: ["opus", "mp4a"].map(codec => ({
+            language: "",
+            role: "",
+            label: "",
+            channelCount: 0,
+            codec,
+            spatialAudio: false,
+        })),
         manifest: {
             disableVideo: disableVideo,
         },
@@ -508,7 +540,9 @@ async function setPlayerAttrs(localPlayer, el, uri, mime, shaka) {
 
     var startTime = 0;
 
-    if (time) {
+    if (resume?.time > 0) {
+        startTime = resume.time;
+    } else if (time) {
         startTime = parseTimeParam(time);
     } else if (window.db && getPreferenceBoolean("watchHistory", false)) {
         await new Promise(resolve => {
@@ -539,6 +573,8 @@ async function setPlayerAttrs(localPlayer, el, uri, mime, shaka) {
                 el.currentTime = startTime;
                 await new Promise(resolve => el.addEventListener("seeked", resolve, { once: true }));
             }
+            // Keep playing if the video was playing before, even when autoplay is off
+            if (resume?.play && el.paused) el.play().catch(() => {});
             initialSeekComplete.value = true;
             let lang = "en";
             const prefLang = getPreferenceString("hl", "en").substr(0, 2);
@@ -611,6 +647,10 @@ async function setPlayerAttrs(localPlayer, el, uri, mime, shaka) {
             await setupThumbnailTrack();
         })
         .catch(e => {
+            if (onLoadError) {
+                console.warn("Loading failed, trying again without SABR", e);
+                return onLoadError();
+            }
             console.error(e);
             error.value = e.code;
         });
@@ -701,9 +741,102 @@ async function loadVideo() {
         uri = props.video.hls;
         mime = "application/x-mpegURL";
     } else {
-        uri = props.video.videoStreams.findLast(stream => stream.codec == null).url;
+        // There may be none when the video only plays over SABR
+        uri = props.video.videoStreams.findLast(stream => stream.codec == null)?.url;
         mime = "video/mp4";
     }
+
+    // SABR is how YouTube's own web player streams, so prefer it when the backend offers it
+    const sabr =
+        !props.video.livestream &&
+        props.video.sabr &&
+        MseSupport &&
+        !getPreferenceBoolean("preferHls", false) &&
+        getPreferenceBoolean("sabr", true)
+            ? props.video.sabr
+            : null;
+
+    // Loaded on demand, so googlevideo isn't downloaded unless it's needed
+    const sabrUtils = sabr ? await import("../utils/SabrUtils.js") : null;
+
+    // The regular streams stay as a fallback in case SABR doesn't work out
+    const fallbackUri = uri;
+    const fallbackMime = mime;
+
+    if (sabr) {
+        uri = sabrUtils.generateSabrManifestUri(sabr, props.video.duration);
+        mime = "application/dash+xml";
+    }
+
+    const startPlayback = player => {
+        // Whatever played before may have had an adapter of its own
+        disposeSabr();
+
+        if (!sabr) return setPlayerAttrs(player, el, uri, mime, shakaLib);
+
+        // Without regular streams there is nothing to fall back to, so just show the error.
+        // Only fall back once: loading the regular streams interrupts a SABR load that is still running,
+        // and that load's error handler would otherwise start the fallback a second time.
+        let fellBack = false;
+        const fallback = fallbackUri
+            ? () => {
+                  if (fellBack) return;
+                  fellBack = true;
+                  // Continue where SABR left off, unless it never got past loading
+                  const resume = { time: initialSeekComplete.value ? el.currentTime : 0, play: !el.paused };
+                  disposeSabr();
+                  return setPlayerAttrs(player, el, fallbackUri, fallbackMime, shakaLib, undefined, resume);
+              }
+            : null;
+
+        const videoId = props.video.id;
+        let adapter = null;
+
+        const onSabrFailure = reason => {
+            // Only if this video's adapter is still the one in use
+            if (sabrAdapter !== adapter) return;
+            console.warn(`Not using SABR: ${reason}`);
+            if (fallback) return fallback();
+            disposeSabr();
+            player.unload();
+            error.value = shakaLib.util.Error.Code.BAD_HTTP_STATUS;
+        };
+
+        adapter = sabrUtils.attachSabrAdapter(
+            shakaLib,
+            player,
+            sabr,
+            () => fetchJson(apiUrl() + "/streams/" + videoId).then(streams => streams.sabr),
+            onSabrFailure,
+        );
+        sabrAdapter = adapter;
+
+        // When googlevideo keeps answering without media but also without an error, Shaka retries forever
+        // and the spinner never goes away. So give up on SABR when the video has been waiting for media
+        // (still loading, seeking or playing, but without enough data to go on) for SABR_STALL_TIMEOUT_MS,
+        // with no new media buffered and no progress in playback.
+        let lastProgress = Date.now();
+        let lastBuffered = 0;
+        let lastTime = el.currentTime;
+        sabrStallTimer = setInterval(() => {
+            let buffered = 0;
+            for (let i = 0; i < el.buffered.length; i++) buffered += el.buffered.end(i) - el.buffered.start(i);
+
+            const waiting =
+                !el.ended &&
+                (!initialSeekComplete.value || el.seeking || !el.paused) &&
+                el.readyState < HTMLMediaElement.HAVE_FUTURE_DATA;
+
+            if (!waiting || buffered > lastBuffered || el.currentTime !== lastTime) lastProgress = Date.now();
+            lastBuffered = buffered;
+            lastTime = el.currentTime;
+
+            if (Date.now() - lastProgress >= SABR_STALL_TIMEOUT_MS)
+                onSabrFailure(`no media arrived for ${SABR_STALL_TIMEOUT_MS / 1000} s`);
+        }, 1000);
+
+        setPlayerAttrs(player, el, uri, mime, shakaLib, fallback);
+    };
 
     if (noPrevPlayer)
         shakaPromise.then(async () => {
@@ -764,9 +897,9 @@ async function loadVideo() {
             localPlayer.configure("streaming.bufferingGoal", Math.max(getPreferenceNumber("bufferGoal", 10), 10));
             localPlayer.configure("streaming.bufferBehind", 300);
 
-            setPlayerAttrs(localPlayer, el, uri, mime, shakaLib);
+            startPlayback(localPlayer);
         });
-    else setPlayerAttrs(playerInstance, el, uri, mime, shakaLib);
+    else startPlayback(playerInstance);
 
     if (noPrevPlayer) {
         el.addEventListener("loadeddata", () => {
@@ -807,11 +940,13 @@ function destroy(hotkeys) {
         thumbnailVttUrl = null;
     }
     if (uiInstance && !document.pictureInPictureElement) {
+        disposeSabr();
         uiInstance.destroy();
         uiInstance = undefined;
         playerInstance = undefined;
     }
     if (playerInstance) {
+        disposeSabr();
         playerInstance.destroy();
         if (!document.pictureInPictureElement) playerInstance = undefined;
     }

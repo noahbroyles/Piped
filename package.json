@@ -14,6 +14,7 @@
         "@vueuse/core": "^14.2.1",
         "dompurify": "3.4.13",
         "fast-xml-parser": "5.7.0",
+        "googlevideo": "4.1.1",
         "hotkeys-js": "4.0.3",
         "javascript-time-ago": "2.6.4",
         "linkify-html": "4.3.2",

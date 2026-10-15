@@ -106,6 +106,12 @@
         </template>
         <PreferenceSwitch id="chkPreferHls" v-model="preferHls" @change="onChange" />
     </PreferenceRow>
+    <PreferenceRow for-id="chkSabr">
+        <template #label>
+            <strong v-t="'actions.use_sabr'" />
+        </template>
+        <PreferenceSwitch id="chkSabr" v-model="sabr" @change="onChange" />
+    </PreferenceRow>
     <label
         class="mx-[15vw] my-2 flex items-center justify-between odd:bg-gray-200 max-md:mx-[2vw] dark:odd:bg-dark-800"
         for="ddlDefaultQuality"
@@ -515,6 +521,7 @@ const autoPlayNextCountdown = usePreferenceNumber("autoPlayNextCountdown", 5);
 const listen = usePreferenceBoolean("listen", false);
 const resolutions = [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320];
 const preferHls = usePreferenceBoolean("preferHls", false);
+const sabr = usePreferenceBoolean("sabr", true);
 const defaultQuality = usePreferenceNumber("quality", 0);
 const bufferingGoal = usePreferenceNumber("bufferGoal", 10);
 const countryMap = ref(CountryMapDefault);
