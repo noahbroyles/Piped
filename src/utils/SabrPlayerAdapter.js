@@ -7,6 +7,7 @@
 //   regular (non SABR) videos afterwards.
 // - It also handles sabr:// itself and keeps each request's original sabr:// URI, both needed
 //   with Shaka 5 (see below).
+// - Each response only yields the segment that was asked for (see SingleSegmentUmpProcessor).
 import { FormatKeyUtils, isGoogleVideoURL } from "googlevideo/utils";
 import { SabrUmpProcessor } from "googlevideo/sabr-streaming-adapter";
 
@@ -22,6 +23,30 @@ function headersToObject(headers) {
     // Edge used to prefix header names with a newline, hence the trim
     headers.forEach((value, key) => (result[key.trim()] = value));
     return result;
+}
+
+// googlevideo often sends more segments than the one asked for, e.g. the first media segment
+// along with an init segment. Its processor hands over the first one, but keeps reading the rest
+// of the network chunk, and each segment it finishes there overwrites the media header it reports
+// for the request. The adapter then believes that later segment was received and tells the server
+// it is buffered, so the server skips the segments before it. The first audio segment went missing
+// that way, and Shaka jumped over the gap, starting the video 5 to 10 seconds in.
+// So once the segment for the request is done, the rest of the response's media is ignored.
+class SingleSegmentUmpProcessor extends SabrUmpProcessor {
+    handleMediaHeader(part) {
+        return this.segmentDone ? undefined : super.handleMediaHeader(part);
+    }
+
+    handleMedia(part) {
+        return this.segmentDone ? undefined : super.handleMedia(part);
+    }
+
+    handleMediaEnd(part) {
+        if (this.segmentDone) return undefined;
+        const result = super.handleMediaEnd(part);
+        if (result) this.segmentDone = true;
+        return result;
+    }
 }
 
 export class SabrPlayerAdapter {
@@ -214,7 +239,7 @@ export class SabrPlayerAdapter {
         minBytes,
     ) {
         let lastTime = Date.now();
-        const umpProcessor = new SabrUmpProcessor(requestMetadata, this.cacheManager);
+        const umpProcessor = new SingleSegmentUmpProcessor(requestMetadata, this.cacheManager);
 
         const checkResultIntegrity = result => {
             if (
