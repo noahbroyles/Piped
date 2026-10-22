@@ -132,6 +132,8 @@ let lastSelectedTextTrack = null;
 let sabrAdapter = null;
 // The interval that watches that adapter's video for stalls
 let sabrStallTimer = null;
+// The loadstart listener that keeps the time bar at the start time while a video loads (see setPlayerAttrs)
+let startTimeListener = null;
 let thumbnailVttUrl = null;
 
 // How long a SABR video may wait for media without getting any before the regular streams take over
@@ -599,11 +601,28 @@ async function setPlayerAttrs(localPlayer, el, uri, mime, shaka, onLoadError, re
         if (saved && !(props.video.duration && saved >= props.video.duration * 0.9)) startTime = saved;
     }
 
+    // Until the metadata is in, a video reports its "default playback start position" as its current time, and seeks
+    // there itself once it can. Setting it while the video waits for its source makes the time bar show the start
+    // time right away, instead of 0:00 until Shaka seeks. Attaching a new source resets it: the first load's source is
+    // already attached (by attach()), but load() attaches another one when something played before, hence loadstart.
+    // A load still running when this one starts (e.g. SABR's, when the fallback takes over) must not apply its own.
+    el.removeEventListener("loadstart", startTimeListener);
+    const showStartTime = () => {
+        if (el.readyState === HTMLMediaElement.HAVE_NOTHING) el.currentTime = startTime;
+    };
+    startTimeListener = showStartTime;
+    if (startTime > 0 && !props.video.livestream) {
+        showStartTime();
+        el.addEventListener("loadstart", showStartTime);
+    }
+
     playerInstance
         // Shaka 5 resolves load() before the metadata is in, then seeks to its own start time once it is, which
         // would undo a seek made here alone. So it gets the start time too (null means the default).
         .load(uri, startTime > 0 ? startTime : null, mime)
         .then(async () => {
+            // Only for this load: a later one (another video, or the fallback from SABR) has its own start time
+            el.removeEventListener("loadstart", showStartTime);
             // Player.load()'s startTime arg has not always performed the
             // initial seek reliably; apply it here too. See shaka-project/shaka-player#6241.
             if (startTime > 0) {
@@ -684,6 +703,7 @@ async function setPlayerAttrs(localPlayer, el, uri, mime, shaka, onLoadError, re
             await setupThumbnailTrack();
         })
         .catch(e => {
+            el.removeEventListener("loadstart", showStartTime);
             if (onLoadError) {
                 console.warn("Loading failed, trying again without SABR", e);
                 return onLoadError();
